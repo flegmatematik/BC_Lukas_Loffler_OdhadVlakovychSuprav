@@ -5,6 +5,9 @@ import numpy as np
 import matplotlib.pyplot as plt
 import pandas as pd
 import pyodbc
+import os
+
+database = '[SK-BB]'
 
 # https://en.wikipedia.org/wiki/Interquartile_range#Outliers
 # pre dany stlpec vypocita hranice
@@ -51,7 +54,13 @@ df = pd.read_sql_query(
       ',COALESCE(DATEDIFF(SECOND,\'1970-01-01\',[ArrRealTime])-DATEDIFF(SECOND,\'1970-01-01\',[ArrPlanTime]),0) as DelayArrive'
       ',COALESCE([LengthSect],0) as LengthSect'
       ',COALESCE([PredLength],0) as PredLength'
-    ' FROM [TrainsDb20-01-23].[dbo].[SK-BB]'
+      ',CASE WHEN DATEPART(MONTH,DepPlanTime) in (3,4,5) then \'Jar\''
+	        ' WHEN DATEPART(MONTH,DepPlanTime) in (6,7,8) then \'Leto\''
+			' WHEN DATEPART(MONTH,DepPlanTime) in (9,10,11) then \'Jesen\''
+ 			' WHEN DATEPART(MONTH,DepPlanTime) in (12,1,2) then \'Zima\''
+			' ELSE \'ErrorValue\''
+	  ' END as Season'
+    ' FROM [TrainsDb20-01-23].[dbo].' + database +
     ' where DepPlanTime IS NOT NULL'
     ' and DepRealTime IS NOT NULL'
     ' and ArrRealTime IS NOT NULL'
@@ -61,6 +70,7 @@ df = pd.read_sql_query(
     ' and CarCount > 0'
     ' and AxisCount > 0'
     ' and LengthSect > 0'
+    ' and TrainType not in (\'Lv\', \'Sluz\')'
     ' and FromName <> ToName'
     ' order by TrainId,SectIdx ASC'
     , cnxn)
@@ -73,12 +83,16 @@ df['ToName'] = df.ToName.cat.codes
 df['PredDelay'] = 0
 df['PredLength'] = 0
 df['DelayDiff'] = 0
+df['DelayDiffPercent'] = 0.0
+df['NoStop'] = 1
 
 lastId = -1
 lastKm = 0
 lastDelay = 0
 # vsetky typy vlakov v databaze
 train_types = ['Ex', 'Lv', 'Mn', 'Nex', 'Os', 'PMD', 'Pn', 'R', 'Sluz', 'Sp', 'Sv', 'Vlec']
+seasons = ['Jar', 'Leto', 'Jesen', 'Zima']
+seasons_dataframes = {}
 train_type_dataframes = {}
 
 print(df.shape)
@@ -189,11 +203,60 @@ print(df.shape)
 
 
 input_attributes = ['Weight', 'Length', 'CarCount', 'AxisCount', 'PlanDrivingTime', 'LengthSect', 'PredLength', 'PredDelay']
-cut_attributes = ['Weight', 'Length', 'CarCount', 'AxisCount', 'PlanDrivingTime', 'LengthSect', 'PredLength', 'PredDelay', 'DelayDiff']
+cut_attributes = ['Weight', 'Length', 'CarCount', 'AxisCount', 'PlanDrivingTime', 'LengthSect', 'PredLength', 'PredDelay', 'DelayDiffPercent']
 
 df['DelayDiff'] = (df['DelayArrive'] - df['PredDelay'])
 # zosekava
 # df = df[((df['DelayDiff'] < 43200) & (df['DelayDiff'] > - 43200))]
+
+df['DelayDiffPercent'] = (df['DelayDiff'] / df['PlanDrivingTime'])
+
+
+for seasonType in seasons:
+    season = df[(df['Season'] == seasonType)]
+    season = season[cut_attributes]
+    print(seasonType)
+    print(season.describe())
+
+    if not os.path.exists(database + '/Seasons/' + seasonType):
+        os.makedirs(database + '/Seasons/' + seasonType)
+        os.makedirs(database + '/Seasons/' + seasonType + '/ScatterPlots')
+
+    if len(season.index) > 30:
+        cor = season.corr()
+        print(cor)
+        print(cor["DelayDiffPercent"].sort_values(ascending=False))
+
+        # korelacna matica s hodnotami
+        fig, ax = plt.subplots()
+        ax.matshow(cor, cmap='seismic')
+        for (i, j), z in np.ndenumerate(cor):
+            ax.text(j, i, '{:0.1f}'.format(z), ha='center', va='center',
+                    bbox=dict(boxstyle='round', facecolor='white', edgecolor='0.3'))
+        plt.title(seasonType)
+        # plt.show()
+        plt.savefig(database + '/Seasons/' + seasonType + '/correlation')
+        plt.close()
+
+# histogram hodnot rocneho obdobia
+        season.hist(bins=30, figsize=(20, 15))
+        plt.suptitle(seasonType)
+        # plt.show()
+        plt.savefig(database + '/Seasons/' + seasonType + '/histogram')
+        plt.close()
+
+        for attr in input_attributes:
+
+            # scatterPlot plyvu atributu na hladanu premennu
+            season.plot(kind='scatter', x=attr, y='DelayDiffPercent', alpha='0.3')
+            plt.title(seasonType)
+            # plt.show()
+            plt.savefig(database + '/Seasons/' + seasonType + '/ScatterPlots/' + attr)
+            plt.close()
+
+        seasons_dataframes[seasonType] = season
+
+
 
 for train_type in train_types:
     ttcut = df[(df['TrainType'] == train_type)]
@@ -202,12 +265,18 @@ for train_type in train_types:
     print(train_type)
     print(ttcut.describe())
 
+
+    if not os.path.exists(database + '/TrainTypes/' + train_type):
+        os.makedirs(database + '/TrainTypes/' + train_type)
+        os.makedirs(database + '/TrainTypes/' + train_type + '/ScatterPlots')
+
+
     if len(ttcut.index) > 30:
         cor = ttcut.corr()
         print(cor)
-        print(cor["DelayDiff"].sort_values(ascending=False))
+        print(cor["DelayDiffPercent"].sort_values(ascending=False))
 
-        # corelacna matica s hodnotami
+        # korelacna matica s hodnotami
         fig, ax = plt.subplots()
         ax.matshow(cor, cmap='seismic')
         for (i, j), z in np.ndenumerate(cor):
@@ -215,12 +284,15 @@ for train_type in train_types:
                     bbox=dict(boxstyle='round', facecolor='white', edgecolor='0.3'))
         plt.title(train_type)
         # plt.show()
-        plt.savefig('BB/' + train_type + '/correlation')
+        plt.savefig(database + '/TrainTypes/' + train_type + '/correlation')
+        plt.close()
 
+# histogram hodnot typu vlaku
         ttcut.hist(bins=30, figsize=(20, 15))
         plt.suptitle(train_type)
         # plt.show()
-        plt.savefig('BB/' + train_type + '/histogram')
+        plt.savefig(database + '/TrainTypes/' + train_type + '/histogram')
+        plt.close()
 
         for attr in input_attributes:
             '''
@@ -229,10 +301,11 @@ for train_type in train_types:
             ttcut.drop(ttcut[(ttcut[attr] > upperbound) | (ttcut[attr] < lowerbound)].index, inplace=True)
             '''
             # scatterPlot plyvu atributu na hladanu premennu
-            ttcut.plot(kind='scatter', x=attr, y='DelayDiff', alpha='0.3')
+            ttcut.plot(kind='scatter', x=attr, y='DelayDiffPercent', alpha='0.3')
             plt.title(train_type)
             # plt.show()
-            plt.savefig('BB/' + train_type + '/ScatterPlots/' + attr)
+            plt.savefig(database + '/TrainTypes/' + train_type + '/ScatterPlots/' + attr)
+            plt.close()
 
 
 
@@ -260,7 +333,7 @@ plt.show()
 """
 
 dffcut= df[cut_attributes]
-dfflabels = df[['DelayDiff']]
+dfflabels = df[['DelayDiffPercent']]
 
 train_dataset = dffcut.sample(frac=0.8, random_state=0)
 test_dataset = dffcut.drop(train_dataset.index)
@@ -270,7 +343,7 @@ print(train_stats.to_string())
 
 
 cor = dffcut.corr()
-print(cor["DelayDiff"].sort_values(ascending=False))
+print(cor["DelayDiffPercent"].sort_values(ascending=False))
 
 fig, ax = plt.subplots()
 ax.matshow(cor, cmap='seismic')
@@ -283,16 +356,19 @@ for (i, j), z in np.ndenumerate(cor):
 
 # plt.show()
 plt.title('All Data')
-plt.savefig('BB/AllData/correlation')
+plt.savefig(database + '/AllData/correlation')
+plt.close()
 
 dffcut.describe()
 dffcut.hist(bins=50, figsize=(20, 15))
 plt.suptitle("All data")
 # plt.show()
-plt.savefig('BB/AllData/histogram')
+plt.savefig(database + '/AllData/histogram')
+plt.close()
 
 for attr in input_attributes:
-    dffcut.plot(kind='scatter', x=attr, y='DelayDiff', alpha='0.3')
+    dffcut.plot(kind='scatter', x=attr, y='DelayDiffPercent', alpha='0.3')
     plt.title("All_data")
     # plt.show()
-    plt.savefig('BB/AllData/ScatterPlots/' + attr)
+    plt.savefig(database + '/AllData/ScatterPlots/' + attr)
+    plt.close()
