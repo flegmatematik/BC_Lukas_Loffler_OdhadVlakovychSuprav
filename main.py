@@ -54,12 +54,18 @@ df = pd.read_sql_query(
       ',COALESCE(DATEDIFF(SECOND,\'1970-01-01\',[ArrRealTime])-DATEDIFF(SECOND,\'1970-01-01\',[ArrPlanTime]),0) as DelayArrive'
       ',COALESCE([LengthSect],0) as LengthSect'
       ',COALESCE([PredLength],0) as PredLength'
+      ',SectIdx'
       ',CASE WHEN DATEPART(MONTH,DepPlanTime) in (3,4,5) then \'Jar\''
 	        ' WHEN DATEPART(MONTH,DepPlanTime) in (6,7,8) then \'Leto\''
 			' WHEN DATEPART(MONTH,DepPlanTime) in (9,10,11) then \'Jesen\''
  			' WHEN DATEPART(MONTH,DepPlanTime) in (12,1,2) then \'Zima\''
 			' ELSE \'ErrorValue\''
 	  ' END as Season'
+      ',CASE WHEN DATEPART(HOUR,DepRealTime) in (5,6,7,8,9,10) THEN \'Rano\''
+			' WHEN DATEPART(HOUR,DepRealTime) in (11,12,13,14,15,16) THEN \'Obed\''
+			' WHEN DATEPART(HOUR,DepRealTime) in (17,18,19,20,21,22) THEN \'Vecer\''
+			' WHEN DATEPART(HOUR,DepRealTime) in (23,0,1,2,3,4) THEN \'Noc\''
+	  ' END as DayTime'
     ' FROM [TrainsDb20-01-23].[dbo].' + database +
     ' where DepPlanTime IS NOT NULL'
     ' and DepRealTime IS NOT NULL'
@@ -91,9 +97,20 @@ lastKm = 0
 lastDelay = 0
 # vsetky typy vlakov v databaze
 train_types = ['Ex', 'Lv', 'Mn', 'Nex', 'Os', 'PMD', 'Pn', 'R', 'Sluz', 'Sp', 'Sv', 'Vlec']
-seasons = ['Jar', 'Leto', 'Jesen', 'Zima']
+stop_types = ['ZaciatokTrasy', 'PokracovanieTrasy']
+season_types = ['Jar', 'Leto', 'Jesen', 'Zima']
+daytime_types = ['Rano', 'Obed', 'Vecer', 'Noc']
+
 seasons_dataframes = {}
+stops_dataframes = {}
 train_type_dataframes = {}
+daytimes_dataframes = {}
+
+filters = {'TrainTypes': [train_types, train_type_dataframes, 'TrainType'],
+           'Seasons': [season_types, seasons_dataframes, 'Season'],
+           'DayTimes': [daytime_types, daytimes_dataframes, 'DayTime']}
+
+
 
 print(df.shape)
 
@@ -211,8 +228,103 @@ df['DelayDiff'] = (df['DelayArrive'] - df['PredDelay'])
 
 df['DelayDiffPercent'] = (df['DelayDiff'] / df['PlanDrivingTime'])
 
+for stopCountType in stop_types:
+    if stopCountType == 'Zaciatok':
+        stopCount = df[(df['SectIdx'] == 0)]
+    else:
+        stopCount = df[(df['SectIdx'] != 0)]
+    stopCount = stopCount[cut_attributes]
+    print(stopCountType)
+    print(stopCount.describe())
 
-for seasonType in seasons:
+    if not os.path.exists(database + '/StopCount/' + stopCountType):
+        os.makedirs(database + '/StopCount/' + stopCountType)
+        os.makedirs(database + '/StopCount/' + stopCountType + '/ScatterPlots')
+
+    if len(stopCount.index) > 30:
+        cor = stopCount.corr()
+        print(cor)
+        print(cor["DelayDiffPercent"].sort_values(ascending=False))
+
+        # korelacna matica s hodnotami
+        fig, ax = plt.subplots()
+        ax.matshow(cor, cmap='seismic')
+        for (i, j), z in np.ndenumerate(cor):
+            ax.text(j, i, '{:0.1f}'.format(z), ha='center', va='center',
+                    bbox=dict(boxstyle='round', facecolor='white', edgecolor='0.3'))
+        plt.title(stopCountType)
+        # plt.show()
+        plt.savefig(database + '/StopCount/' + stopCountType + '/correlation')
+        plt.close()
+
+        # histogram hodnot rocneho obdobia
+        stopCount.hist(bins=30, figsize=(20, 15))
+        plt.suptitle(stopCountType)
+        # plt.show()
+        plt.savefig(database + '/StopCount/' + stopCountType + '/histogram')
+        plt.close()
+
+        for attr in input_attributes:
+            # scatterPlot plyvu atributu na hladanu premennu
+            stopCount.plot(kind='scatter', x=attr, y='DelayDiffPercent', alpha='0.3')
+            plt.title(stopCountType)
+            # plt.show()
+            plt.savefig(database + '/StopCount/' + stopCountType + '/ScatterPlots/' + attr)
+            plt.close()
+
+        stops_dataframes[stopCountType] = stopCount
+
+
+for filter_type, filter in filters.items():
+    data_types = filter[0]
+    dataframe = filter[1]
+    column = filter[2]
+
+    for data_type in data_types:
+        type = df[(df[column] == data_type)]
+        type = type[cut_attributes]
+        print(data_type)
+        print(type.describe())
+
+        if not os.path.exists(database + '/' + filter_type + '/' + data_type):
+            os.makedirs(database + '/' + filter_type + '/' + data_type)
+            os.makedirs(database + '/' + filter_type + '/' + data_type + '/ScatterPlots')
+
+        if len(type.index) > 30:
+            cor = type.corr()
+            print(cor)
+            print(cor["DelayDiffPercent"].sort_values(ascending=False))
+
+            # korelacna matica s hodnotami
+            fig, ax = plt.subplots()
+            ax.matshow(cor, cmap='seismic')
+            for (i, j), z in np.ndenumerate(cor):
+                ax.text(j, i, '{:0.1f}'.format(z), ha='center', va='center',
+                        bbox=dict(boxstyle='round', facecolor='white', edgecolor='0.3'))
+            plt.title(data_type)
+            # plt.show()
+            plt.savefig(database + '/' + filter_type + '/' + data_type + '/correlation')
+            plt.close()
+
+            # histogram hodnot rocneho obdobia
+            type.hist(bins=30, figsize=(20, 15))
+            plt.suptitle(data_type)
+            # plt.show()
+            plt.savefig(database + '/' + filter_type + '/' + data_type + '/histogram')
+            plt.close()
+
+            for attr in input_attributes:
+                # scatterPlot plyvu atributu na hladanu premennu
+                type.plot(kind='scatter', x=attr, y='DelayDiffPercent', alpha='0.3')
+                plt.title(data_type)
+                # plt.show()
+                plt.savefig(database + '/' + filter_type + '/' + data_type + '/ScatterPlots/' + attr)
+                plt.close()
+
+            dataframe[data_type] = type
+
+"""
+for seasonType in season_types:
     season = df[(df['Season'] == seasonType)]
     season = season[cut_attributes]
     print(seasonType)
@@ -256,6 +368,49 @@ for seasonType in seasons:
 
         seasons_dataframes[seasonType] = season
 
+for daytime_type in daytime_types:
+    daytime = df[(df['DayTime'] == daytime_type)]
+    daytime = daytime[cut_attributes]
+    print(daytime_type)
+    print(daytime.describe())
+
+    if not os.path.exists(database + '/DayTimes/' + daytime_type):
+        os.makedirs(database + '/DayTimes/' + daytime_type)
+        os.makedirs(database + '/DayTimes/' + daytime_type + '/ScatterPlots')
+
+    if len(daytime.index) > 30:
+        cor = daytime.corr()
+        print(cor)
+        print(cor["DelayDiffPercent"].sort_values(ascending=False))
+
+        # korelacna matica s hodnotami
+        fig, ax = plt.subplots()
+        ax.matshow(cor, cmap='seismic')
+        for (i, j), z in np.ndenumerate(cor):
+            ax.text(j, i, '{:0.1f}'.format(z), ha='center', va='center',
+                    bbox=dict(boxstyle='round', facecolor='white', edgecolor='0.3'))
+        plt.title(daytime_type)
+        # plt.show()
+        plt.savefig(database + '/DayTimes/' + daytime_type + '/correlation')
+        plt.close()
+
+# histogram hodnot rocneho obdobia
+        daytime.hist(bins=30, figsize=(20, 15))
+        plt.suptitle(daytime_type)
+        # plt.show()
+        plt.savefig(database + '/DayTimes/' + daytime_type + '/histogram')
+        plt.close()
+
+        for attr in input_attributes:
+
+            # scatterPlot plyvu atributu na hladanu premennu
+            daytime.plot(kind='scatter', x=attr, y='DelayDiffPercent', alpha='0.3')
+            plt.title(daytime_type)
+            # plt.show()
+            plt.savefig(database + '/DayTimes/' + daytime_type + '/ScatterPlots/' + attr)
+            plt.close()
+
+        daytimes_dataframe[daytime_type] = daytime
 
 
 for train_type in train_types:
@@ -307,16 +462,9 @@ for train_type in train_types:
             plt.savefig(database + '/TrainTypes/' + train_type + '/ScatterPlots/' + attr)
             plt.close()
 
-
-
-        """
-        ttcut.plot(kind='scatter', x='Weight', y='DelayDiff', alpha='0.3')
-        plt.title(train_type)
-        plt.show()
-        """
-
         train_type_dataframes[train_type] = ttcut
 
+"""
 # print(df.to_string())
 print(df.dtypes)
 
