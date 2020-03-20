@@ -7,10 +7,15 @@ import pandas as pd
 import pyodbc
 import os
 
-database = '[SK-BB]'
+# database = '[SK-BB]'
+database = '[CZ-PREOS_GTN]'
+zastavky = ['Ostrava-Svinov', 'Polanka n. O.', 'Jistebník', 'Studénka', 'Suchdol nad Odr.', 'Polom',
+                'Hranice na Mor.', 'Drahotue', 'Lipník nad Beèv.', 'Prosenice', 'Pøerov os.n.']
 
 # https://en.wikipedia.org/wiki/Interquartile_range#Outliers
 # pre dany stlpec vypocita hranice
+
+
 def outlier_treatment(datacolumn):
     sorted(datacolumn)
     Q1, Q3 = np.percentile(datacolumn, [25, 75])
@@ -18,6 +23,44 @@ def outlier_treatment(datacolumn):
     lower_range = Q1 - (1.5 * IQR)
     upper_range = Q3 + (1.5 * IQR)
     return lower_range, upper_range
+
+
+def track_monitor(stops_list, df_p, title, directory):
+    cesty = {}
+    lastId = -1
+    for index, row in df_p.iterrows():
+        trainId = row['TrainId']
+        if (row['FromName'] in stops_list) & (row['ToName'] in stops_list):
+            if trainId == lastId:
+                cesty.setdefault(trainId, []).append(row['DelayDiffPercent'])
+            elif (row['SectIdx'] == 0) & (row['FromName'] == stops_list[0]):
+                cesty[row['TrainId']] = [0.0, row['DelayDiffPercent']]
+                lastId = trainId
+        else:
+            if trainId == lastId:
+                cesty.pop(lastId, None)
+
+    total = [0] * len(stops_list)
+
+    trainsCount = 0
+    for value in cesty.values():
+        if len(value) == 11:
+            plt.plot(zastavky, value)
+            total = np.add(value, total)
+            trainsCount += 1
+    plt.title(title)
+    plt.setp(ax.get_xticklabels(), rotation=30, horizontalalignment='right', fontsize='x-small')
+    plt.savefig(directory + 'AllTrains')
+    plt.close()
+
+    dividers = [trainsCount] * len(stops_list)
+
+    means = np.divide(total, dividers)
+
+    plt.title(title)
+    plt.plot(zastavky, means)
+    plt.savefig(directory + 'Mean')
+    plt.close()
 
 
 pd.set_option('display.max_rows', None)
@@ -29,10 +72,8 @@ cnxn = pyodbc.connect("Driver={SQL Server};"
                       "Database=TrainsDB20-01-23;"
                       "uid=Lukas;pwd=lukas")
 
-
 df = pd.read_sql_query(
-      'SELECT [Id]'
-      ',[TrainId]'
+      'SELECT TOP(100000) [TrainId]'
       ',[FromName]'
       ',[ToName]'
       ',[TrainType]'
@@ -81,20 +122,13 @@ df = pd.read_sql_query(
     ' order by TrainId,SectIdx ASC'
     , cnxn)
 
-
-df['FromName'] = pd.Categorical(df['FromName'])
-df['FromName'] = df.FromName.cat.codes
-df['ToName'] = pd.Categorical(df['ToName'])
-df['ToName'] = df.ToName.cat.codes
 df['PredDelay'] = 0
 df['PredLength'] = 0
 df['DelayDiff'] = 0
 df['DelayDiffPercent'] = 0.0
 df['NoStop'] = 1
 
-lastId = -1
-lastKm = 0
-lastDelay = 0
+
 # vsetky typy vlakov v databaze
 train_types = ['Ex', 'Lv', 'Mn', 'Nex', 'Os', 'PMD', 'Pn', 'R', 'Sluz', 'Sp', 'Sv', 'Vlec']
 stop_types = ['ZaciatokTrasy', 'PokracovanieTrasy']
@@ -110,13 +144,7 @@ filters = {'TrainTypes': [train_types, train_type_dataframes, 'TrainType'],
            'Seasons': [season_types, seasons_dataframes, 'Season'],
            'DayTimes': [daytime_types, daytimes_dataframes, 'DayTime']}
 
-
-
 print(df.shape)
-
-# vymena nespravnych stlpcov
-
-# df.loc[cond, ['AxisCount', 'CarCount']] = df.loc[cond, ['CarCount', 'AxisCount']]
 
 # filtracia
 print(df.shape)
@@ -188,7 +216,9 @@ print(df.shape)
 df = df[(df['RealDrivingTime'] > 60)]
 
 
-# print(df)
+lastId = -1
+lastKm = 0
+lastDelay = 0
 
 # vypocet hodnot pre dlzku predosleho useku a posledneho meskania
 for index in df.index:
@@ -214,6 +244,9 @@ for index in df.index:
 
 print(df.shape)
 
+df = df[(df['AxisCount'] / df['CarCount'] == 2) | (df['AxisCount'] / df['CarCount'] == 4)]
+print(df.shape)
+
 # ostranenie zapornych trvani tras
 # df = df[(df['PlanDrivingTime'] > 60)]
 # df = df[(df['RealDrivingTime'] > 60)]
@@ -222,18 +255,19 @@ print(df.shape)
 input_attributes = ['Weight', 'Length', 'CarCount', 'AxisCount', 'PlanDrivingTime', 'LengthSect', 'PredLength', 'PredDelay']
 cut_attributes = ['Weight', 'Length', 'CarCount', 'AxisCount', 'PlanDrivingTime', 'LengthSect', 'PredLength', 'PredDelay', 'DelayDiffPercent']
 
-df['DelayDiff'] = (df['DelayArrive'] - df['PredDelay'])
+df['DelayDiff'] = (df['RealDrivingTime'] - df['PlanDrivingTime'])
 # zosekava
 # df = df[((df['DelayDiff'] < 43200) & (df['DelayDiff'] > - 43200))]
 
 df['DelayDiffPercent'] = (df['DelayDiff'] / df['PlanDrivingTime'])
 
+
+# print(df.describe)
 for stopCountType in stop_types:
     if stopCountType == 'Zaciatok':
         stopCount = df[(df['SectIdx'] == 0)]
     else:
         stopCount = df[(df['SectIdx'] != 0)]
-    stopCount = stopCount[cut_attributes]
     print(stopCountType)
     print(stopCount.describe())
 
@@ -242,7 +276,7 @@ for stopCountType in stop_types:
         os.makedirs(database + '/StopCount/' + stopCountType + '/ScatterPlots')
 
     if len(stopCount.index) > 30:
-        cor = stopCount.corr()
+        cor = stopCount[cut_attributes].corr()
         print(cor)
         print(cor["DelayDiffPercent"].sort_values(ascending=False))
 
@@ -258,7 +292,7 @@ for stopCountType in stop_types:
         plt.close()
 
         # histogram hodnot rocneho obdobia
-        stopCount.hist(bins=30, figsize=(20, 15))
+        stopCount[cut_attributes].hist(bins=30, figsize=(20, 15))
         plt.suptitle(stopCountType)
         # plt.show()
         plt.savefig(database + '/StopCount/' + stopCountType + '/histogram')
@@ -266,7 +300,7 @@ for stopCountType in stop_types:
 
         for attr in input_attributes:
             # scatterPlot plyvu atributu na hladanu premennu
-            stopCount.plot(kind='scatter', x=attr, y='DelayDiffPercent', alpha='0.3')
+            stopCount[cut_attributes].plot(kind='scatter', x=attr, y='DelayDiffPercent', alpha='0.3')
             plt.title(stopCountType)
             # plt.show()
             plt.savefig(database + '/StopCount/' + stopCountType + '/ScatterPlots/' + attr)
@@ -282,16 +316,16 @@ for filter_type, filter in filters.items():
 
     for data_type in data_types:
         type = df[(df[column] == data_type)]
-        type = type[cut_attributes]
         print(data_type)
         print(type.describe())
 
         if not os.path.exists(database + '/' + filter_type + '/' + data_type):
             os.makedirs(database + '/' + filter_type + '/' + data_type)
             os.makedirs(database + '/' + filter_type + '/' + data_type + '/ScatterPlots')
+            os.makedirs(database + '/' + filter_type + '/' + data_type + '/TrainRoute')
 
         if len(type.index) > 30:
-            cor = type.corr()
+            cor = type[cut_attributes].corr()
             print(cor)
             print(cor["DelayDiffPercent"].sort_values(ascending=False))
 
@@ -307,7 +341,7 @@ for filter_type, filter in filters.items():
             plt.close()
 
             # histogram hodnot rocneho obdobia
-            type.hist(bins=30, figsize=(20, 15))
+            type[cut_attributes].hist(bins=30, figsize=(20, 15))
             plt.suptitle(data_type)
             # plt.show()
             plt.savefig(database + '/' + filter_type + '/' + data_type + '/histogram')
@@ -315,156 +349,17 @@ for filter_type, filter in filters.items():
 
             for attr in input_attributes:
                 # scatterPlot plyvu atributu na hladanu premennu
-                type.plot(kind='scatter', x=attr, y='DelayDiffPercent', alpha='0.3')
+                type[cut_attributes].plot(kind='scatter', x=attr, y='DelayDiffPercent', alpha='0.3')
                 plt.title(data_type)
                 # plt.show()
                 plt.savefig(database + '/' + filter_type + '/' + data_type + '/ScatterPlots/' + attr)
                 plt.close()
 
             dataframe[data_type] = type
-
-"""
-for seasonType in season_types:
-    season = df[(df['Season'] == seasonType)]
-    season = season[cut_attributes]
-    print(seasonType)
-    print(season.describe())
-
-    if not os.path.exists(database + '/Seasons/' + seasonType):
-        os.makedirs(database + '/Seasons/' + seasonType)
-        os.makedirs(database + '/Seasons/' + seasonType + '/ScatterPlots')
-
-    if len(season.index) > 30:
-        cor = season.corr()
-        print(cor)
-        print(cor["DelayDiffPercent"].sort_values(ascending=False))
-
-        # korelacna matica s hodnotami
-        fig, ax = plt.subplots()
-        ax.matshow(cor, cmap='seismic')
-        for (i, j), z in np.ndenumerate(cor):
-            ax.text(j, i, '{:0.1f}'.format(z), ha='center', va='center',
-                    bbox=dict(boxstyle='round', facecolor='white', edgecolor='0.3'))
-        plt.title(seasonType)
-        # plt.show()
-        plt.savefig(database + '/Seasons/' + seasonType + '/correlation')
-        plt.close()
-
-# histogram hodnot rocneho obdobia
-        season.hist(bins=30, figsize=(20, 15))
-        plt.suptitle(seasonType)
-        # plt.show()
-        plt.savefig(database + '/Seasons/' + seasonType + '/histogram')
-        plt.close()
-
-        for attr in input_attributes:
-
-            # scatterPlot plyvu atributu na hladanu premennu
-            season.plot(kind='scatter', x=attr, y='DelayDiffPercent', alpha='0.3')
-            plt.title(seasonType)
-            # plt.show()
-            plt.savefig(database + '/Seasons/' + seasonType + '/ScatterPlots/' + attr)
-            plt.close()
-
-        seasons_dataframes[seasonType] = season
-
-for daytime_type in daytime_types:
-    daytime = df[(df['DayTime'] == daytime_type)]
-    daytime = daytime[cut_attributes]
-    print(daytime_type)
-    print(daytime.describe())
-
-    if not os.path.exists(database + '/DayTimes/' + daytime_type):
-        os.makedirs(database + '/DayTimes/' + daytime_type)
-        os.makedirs(database + '/DayTimes/' + daytime_type + '/ScatterPlots')
-
-    if len(daytime.index) > 30:
-        cor = daytime.corr()
-        print(cor)
-        print(cor["DelayDiffPercent"].sort_values(ascending=False))
-
-        # korelacna matica s hodnotami
-        fig, ax = plt.subplots()
-        ax.matshow(cor, cmap='seismic')
-        for (i, j), z in np.ndenumerate(cor):
-            ax.text(j, i, '{:0.1f}'.format(z), ha='center', va='center',
-                    bbox=dict(boxstyle='round', facecolor='white', edgecolor='0.3'))
-        plt.title(daytime_type)
-        # plt.show()
-        plt.savefig(database + '/DayTimes/' + daytime_type + '/correlation')
-        plt.close()
-
-# histogram hodnot rocneho obdobia
-        daytime.hist(bins=30, figsize=(20, 15))
-        plt.suptitle(daytime_type)
-        # plt.show()
-        plt.savefig(database + '/DayTimes/' + daytime_type + '/histogram')
-        plt.close()
-
-        for attr in input_attributes:
-
-            # scatterPlot plyvu atributu na hladanu premennu
-            daytime.plot(kind='scatter', x=attr, y='DelayDiffPercent', alpha='0.3')
-            plt.title(daytime_type)
-            # plt.show()
-            plt.savefig(database + '/DayTimes/' + daytime_type + '/ScatterPlots/' + attr)
-            plt.close()
-
-        daytimes_dataframe[daytime_type] = daytime
+            directory = database + '/' + filter_type + '/' + data_type + '/TrainRoute/'
+            track_monitor(zastavky, type, data_type, directory)
 
 
-for train_type in train_types:
-    ttcut = df[(df['TrainType'] == train_type)]
-    ttcut = ttcut[cut_attributes]
-
-    print(train_type)
-    print(ttcut.describe())
-
-
-    if not os.path.exists(database + '/TrainTypes/' + train_type):
-        os.makedirs(database + '/TrainTypes/' + train_type)
-        os.makedirs(database + '/TrainTypes/' + train_type + '/ScatterPlots')
-
-
-    if len(ttcut.index) > 30:
-        cor = ttcut.corr()
-        print(cor)
-        print(cor["DelayDiffPercent"].sort_values(ascending=False))
-
-        # korelacna matica s hodnotami
-        fig, ax = plt.subplots()
-        ax.matshow(cor, cmap='seismic')
-        for (i, j), z in np.ndenumerate(cor):
-            ax.text(j, i, '{:0.1f}'.format(z), ha='center', va='center',
-                    bbox=dict(boxstyle='round', facecolor='white', edgecolor='0.3'))
-        plt.title(train_type)
-        # plt.show()
-        plt.savefig(database + '/TrainTypes/' + train_type + '/correlation')
-        plt.close()
-
-# histogram hodnot typu vlaku
-        ttcut.hist(bins=30, figsize=(20, 15))
-        plt.suptitle(train_type)
-        # plt.show()
-        plt.savefig(database + '/TrainTypes/' + train_type + '/histogram')
-        plt.close()
-
-        for attr in input_attributes:
-            '''
-            # outliers - vyradenie pomocou IQR - Inter Quantile Range
-            lowerbound, upperbound = outlier_treatment(ttcut[attr])
-            ttcut.drop(ttcut[(ttcut[attr] > upperbound) | (ttcut[attr] < lowerbound)].index, inplace=True)
-            '''
-            # scatterPlot plyvu atributu na hladanu premennu
-            ttcut.plot(kind='scatter', x=attr, y='DelayDiffPercent', alpha='0.3')
-            plt.title(train_type)
-            # plt.show()
-            plt.savefig(database + '/TrainTypes/' + train_type + '/ScatterPlots/' + attr)
-            plt.close()
-
-        train_type_dataframes[train_type] = ttcut
-
-"""
 # print(df.to_string())
 print(df.dtypes)
 
@@ -479,6 +374,9 @@ Y = np.c_[df['DelayArrive']]
 df.plot.scatter(x='LengthSect', y='DelayArrive')
 plt.show()
 """
+if not os.path.exists(database + '/AllData'):
+    os.makedirs(database + '/AllData')
+    os.makedirs(database + '/AllData/ScatterPlots')
 
 dffcut= df[cut_attributes]
 dfflabels = df[['DelayDiffPercent']]
